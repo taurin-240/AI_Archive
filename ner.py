@@ -1,11 +1,16 @@
+import os
+import re
 from navec import Navec
 from slovnet import NER
-import re
 
-navec_path = 'navec_news_v1_1B_250K_300d_100q.tar'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(BASE_DIR, 'models')
+
+navec_path = os.path.join(MODELS_DIR, 'navec_news_v1_1B_250K_300d_100q.tar')
+ner_model_path = os.path.join(MODELS_DIR, 'slovnet_ner_news_v1.tar')
+
 navec = Navec.load(navec_path)
-
-ner_model = NER.load('slovnet_ner_news_v1.tar')
+ner_model = NER.load(ner_model_path)
 ner_model.navec(navec)
 
 
@@ -143,3 +148,36 @@ def perform_ner(text: str) -> str:
     """
     markup = ner_model(text)
     return annotate_text(markup)
+
+
+def extract_entities_structured(text: str) -> list[dict]:
+    """
+    Возвращает сущности в структурированном виде для пайплайна.
+    Формат: [{"type": "PER", "text": "Иван Петров", "start": 0, "end": 12}, ...]
+    """
+    markup = ner_model(text)
+    entities = []
+    for span in markup.spans:
+        entities.append({
+            "type": span.type.lower(),
+            "text": markup.text[span.start:span.stop],
+            "start": span.start,
+            "end": span.stop
+        })
+    # Добавляем даты из regex
+    for start, end, _ in find_dates(text):
+        entities.append({
+            "type": "date",
+            "text": text[start:end],
+            "start": start,
+            "end": end
+        })
+    # Сортируем по позиции, убираем пересечения (простая дедупликация)
+    entities.sort(key=lambda x: x["start"])
+    filtered = []
+    last_end = 0
+    for ent in entities:
+        if ent["start"] >= last_end:
+            filtered.append(ent)
+            last_end = ent["end"]
+    return filtered

@@ -1,0 +1,7 @@
+venv/
+.env
+static/uploads/*
+.DS_Store
+*.pyc
+__pycache__/
+lvenv/

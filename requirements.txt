@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cu126
 Flask
 Pillow
 easyocr
@@ -10,3 +11,6 @@ transformers
 pytest
 pytest-mock
 flasgger
+neo4j
+python-dotenv
+gunicorn

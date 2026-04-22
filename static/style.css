@@ -455,3 +455,118 @@ mark.ner-date {
     color: var(--text-secondary);
     font-style: italic;
 }
+
+/* === Graph Explorer Styles === */
+.graph-explorer {
+    margin-top: 2rem;
+    padding: 1.5rem;
+    border-radius: 12px;
+    background: var(--bg-card, rgba(255,255,255,0.05));
+    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+}
+
+.query-form {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+
+.query-form textarea {
+    flex: 1;
+    min-width: 200px;
+    padding: 0.75rem;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-input, rgba(0,0,0,0.2));
+    color: var(--text-color);
+    font-family: monospace;
+    resize: vertical;
+    min-height: 60px;
+}
+
+.query-form button {
+    padding: 0.75rem 1.5rem;
+    background: var(--primary-color, #6366f1);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: opacity 0.2s;
+}
+
+.query-form button:hover { opacity: 0.9; }
+.query-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+#graph-container {
+    height: 400px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-canvas, rgba(0,0,0,0.1));
+    margin-bottom: 1rem;
+}
+
+#query-results-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+#query-results-table th,
+#query-results-table td {
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+#query-results-table th {
+    background: var(--bg-header, rgba(255,255,255,0.05));
+    font-weight: 600;
+}
+
+.query-presets {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.query-presets button {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.85rem;
+    background: var(--bg-btn-secondary, rgba(255,255,255,0.1));
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-color);
+    cursor: pointer;
+}
+
+.query-presets button:hover {
+    background: var(--bg-btn-hover, rgba(255,255,255,0.15));
+}
+
+/* Адаптация под светлую тему */
+body.light-theme .graph-explorer {
+    --bg-card: #fff;
+    --bg-input: #f8f9fa;
+    --bg-canvas: #f1f5f9;
+    --bg-header: #e2e8f0;
+    --bg-btn-secondary: #e2e8f0;
+    --bg-btn-hover: #cbd5e1;
+    --border-color: #cbd5e1;
+    --text-color: #1e293b;
+}
+
+/* Спиннер загрузки */
+.loading {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-radius: 50%;
+    border-top-color: white;
+    animation: spin 1s linear infinite;
+    margin-right: 0.5rem;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

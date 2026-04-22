@@ -1,67 +1,34 @@
-from flask import Flask, render_template, request, redirect, url_for
+import os
+import secrets
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from flasgger import Swagger
+from graph_db import Neo4jManager
+from normalizer import normalize_entity
+
 from ocr import perform_ocr
 from htr import perform_htr
-from ner import perform_ner, translate_text
+from ner import perform_ner, translate_text, extract_entities_structured
 from relations import extract_relations
-import ast
-import os
 
 app = Flask(__name__)
+app.secret_key = secrets.token_hex(16)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
-UPLOAD_FOLDER = 'static/uploads'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = 'static/uploads'
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Настройка Flasgger
-template = {
+swagger_template = {
     "swagger": "2.0",
-    "info": {
-        "title": "OCR + NER API",
-        "description": "API для AI Archive with ner, ocr and htr models",
-        "version": "1.0.0"
-    },
-    "consumes": [
-        "multipart/form-data"
-    ],
-    "produces": [
-        "application/json"
-    ],
+    "info": {"title": "AI Archive API", "version": "1.0.0"},
+    "consumes": ["multipart/form-data"],
+    "produces": ["application/json"]
 }
+swagger = Swagger(app, template=swagger_template)
 
-swagger = Swagger(app, template=template)
+db = Neo4jManager()
 
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    """
-    Загрузка изображения и выбор типа обработки
-    ---
-    tags:
-      - Main
-    consumes:
-      - multipart/form-data
-    parameters:
-      - in: formData
-        name: image
-        type: file
-        required: true
-        description: Изображение для обработки
-      - in: formData
-        name: text_type
-        type: string
-        enum: [ocr, htr]
-        required: true
-        description: Тип текста (машинный или рукописный)
-      - in: formData
-        name: translate
-        type: boolean
-        required: false
-        description: Перевести текст с дореволюционного русского
-    responses:
-      302:
-        description: Редирект на страницу результатов
-    """
     if request.method == 'POST':
         if 'image' not in request.files or 'text_type' not in request.form:
             return redirect(request.url)
@@ -70,121 +37,51 @@ def index():
         text_type = request.form['text_type']
         translate = 'translate' in request.form
 
-        if file.filename == '':
-            return redirect(request.url)
-
-        if file and text_type in ['ocr', 'htr']:
+        if file and file.filename and text_type in ['ocr', 'htr']:
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
             file.save(filepath)
 
-            if text_type == 'ocr':
-                text = perform_ocr(filepath)
-            else:  # htr
-                _, text = perform_htr(filepath)
+            try:
+                text = perform_ocr(filepath) if text_type == 'ocr' else perform_htr(filepath)[1]
+                if translate:
+                    text = translate_text(text)
 
-            if translate:
-                text = translate_text(text)
+                annotated_html = perform_ner(text)
+                entities = extract_entities_structured(text)
+                relations = extract_relations(text, entities)
 
-            annotated_text_html = perform_ner(text)
-            relations = extract_relations(text)
+                norm_entities = [normalize_entity(e) for e in entities]
+                try:
+                    db.upsert_entities(norm_entities)
+                    db.upsert_relations(relations)
+                except Exception:
+                    pass
 
-            image_url = url_for('static', filename=f'uploads/{file.filename}')
-
-            return redirect(
-                url_for('results',
-                        image_path=image_url,
-                        extracted_text=annotated_text_html,
-                        text_type=text_type,
-                        translate=translate,
-                        relations=relations))
+                session['last_result'] = {
+                    'image_path': url_for('static', filename=f'uploads/{file.filename}'),
+                    'extracted_text': annotated_html,
+                    'text_type': text_type,
+                    'translate': translate,
+                    'relations': relations,
+                    'raw_text': text
+                }
+                return redirect(url_for('results'))
+            except Exception:
+                return redirect(url_for('index'))
 
     return render_template('index.html')
 
 
 @app.route('/results')
 def results():
-    """
-    Отображение результатов обработки
-    ---
-    tags:
-      - Results
-    parameters:
-      - in: query
-        name: image_path
-        type: string
-        required: true
-        description: Путь к изображению
-      - in: query
-        name: extracted_text
-        type: string
-        required: true
-        description: Извлечённый и аннотированный текст
-      - in: query
-        name: text_type
-        type: string
-        enum: [ocr, htr]
-        required: false
-        default: ocr
-        description: Тип текста (OCR или HTR)
-      - in: query
-        name: translate
-        type: boolean
-        required: false
-        default: false
-        description: Был ли применён перевод
-      - in: query
-        name: relations
-        type: string
-        required: false
-        description: Извлечённые отношения
-    responses:
-      200:
-        description: Страница с результатами
-    """
-    image_path = request.args.get('image_path')
-    extracted_text = request.args.get('extracted_text')
-    text_type = request.args.get('text_type', 'ocr')
-    translate = request.args.get('translate', 'False') == 'True'
-
-    relations_str = request.args.get('relations', '[]')
-    try:
-        relations = ast.literal_eval(relations_str)
-    except (ValueError, SyntaxError):
-        relations = []
-
-    if not image_path or not extracted_text:
+    result = session.get('last_result')
+    if not result or not result.get('image_path'):
         return redirect(url_for('index'))
-
-    return render_template('results.html',
-                           image_path=image_path,
-                           extracted_text=extracted_text,
-                           text_type=text_type,
-                           translate=translate,
-                           relations=relations)
+    return render_template('results.html', **result)
 
 
 @app.route('/ner_check', methods=['GET', 'POST'])
 def ner_check():
-    """
-    Проверка NER-модели на тексте
-    ---
-    tags:
-      - NER Check
-    parameters:
-      - in: formData
-        name: text
-        type: string
-        required: false
-        description: Текст для анализа
-      - in: formData
-        name: translate
-        type: boolean
-        required: false
-        description: Перевести текст с дореволюционного русского
-    responses:
-      200:
-        description: Страница с результатами NER
-    """
     extracted_text = None
     relations = []
     translate = False
@@ -194,9 +91,9 @@ def ner_check():
         if text:
             if translate:
                 text = translate_text(text)
+            entities = extract_entities_structured(text)
             extracted_text = perform_ner(text)
-            relations = extract_relations(text)
-
+            relations = extract_relations(text, entities)
     return render_template('ner_check.html',
                            extracted_text=extracted_text,
                            relations=relations,
@@ -205,82 +102,146 @@ def ner_check():
 
 @app.route('/api/process', methods=['POST'])
 def api_process():
-    """
-    API-эндпоинт для обработки изображений
-    ---
-    tags:
-      - API
-    consumes:
-      - multipart/form-data
-    parameters:
-      - in: formData
-        name: image
-        type: file
-        required: true
-        description: Изображение для обработки
-      - in: formData
-        name: text_type
-        type: string
-        enum: [ocr, htr]
-        required: true
-        description: Тип текста (машинный или рукописный)
-      - in: formData
-        name: translate
-        type: boolean
-        required: false
-        description: Перевести текст с дореволюционного русского
-    responses:
-      200:
-        description: Успешная обработка
-        schema:
-          type: object
-          properties:
-            text:
-              type: string
-              description: Извлечённый текст
-            annotated_text:
-              type: string
-              description: Текст с NER-тегами
-            relations:
-              type: array
-              items:
-                type: array
-                description: Список кортежей (сущность1, отношение, сущность2)
-      400:
-        description: Ошибка ввода
-    """
     if 'image' not in request.files or 'text_type' not in request.form:
-        return {'error': 'Missing required fields'}, 400
+        return jsonify({'error': 'Missing required fields'}), 400
 
     file = request.files['image']
     text_type = request.form['text_type']
     translate = 'translate' in request.form
 
-    if file.filename == '':
-        return {'error': 'No file selected'}, 400
-
-    if text_type not in ['ocr', 'htr']:
-        return {'error': 'Invalid text_type'}, 400
+    if not file.filename or text_type not in ['ocr', 'htr']:
+        return jsonify({'error': 'Invalid input'}), 400
 
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
     file.save(filepath)
 
-    if text_type == 'ocr':
-        text = perform_ocr(filepath)
-    else:
-        _, text = perform_htr(filepath)
-
+    text = perform_ocr(filepath) if text_type == 'ocr' else perform_htr(filepath)[1]
     if translate:
         text = translate_text(text)
 
     annotated_text = perform_ner(text)
-    relations = extract_relations(text)
+    entities = extract_entities_structured(text)
+    relations = extract_relations(text, entities)
 
-    return {
+    return jsonify({
         'text': text,
         'annotated_text': annotated_text,
         'relations': relations
-    }
+    })
+
+
+@app.route('/api/query', methods=['POST'])
+def api_query():
+    data = request.get_json() or {}
+    query = data.get('query', '').strip()
+    if not query:
+        return jsonify({'error': 'Query is required'}), 400
+
+    try:
+        with db.driver.session() as sess:
+            records = list(sess.run(query))
+        
+        nodes, edges, table_rows = [], [], []
+        node_ids = set()
+
+        for record in records:
+            row = {}
+            for key in record.keys():
+                val = record[key]
+                
+                # 1. Это Узел (Node)
+                if hasattr(val, 'labels'):
+                    nid = val.element_id
+                    if nid not in node_ids:
+                        node_ids.add(nid)
+                        lbls = list(val.labels)
+                        label = lbls[0] if lbls else 'Node'
+                        nodes.append({'id': nid, 'label': val.get('name') or val.get('value') or label, 'type': label})
+                    row[key] = f"({label}) {val.get('name') or val.get('value')}"
+                
+                # 2. Это Связь (Relationship)
+                elif hasattr(val, 'type') and hasattr(val, 'start_node'):
+                    start_nid = val.start_node.element_id
+                    end_nid = val.end_node.element_id
+                    
+                    if start_nid not in node_ids:
+                        node_ids.add(start_nid)
+                        start_label = list(val.start_node.labels)[0] if val.start_node.labels else 'Node'
+                        nodes.append({'id': start_nid, 'label': val.start_node.get('name') or start_label, 'type': start_label})
+                    
+                    if end_nid not in node_ids:
+                        node_ids.add(end_nid)
+                        end_label = list(val.end_node.labels)[0] if val.end_node.labels else 'Node'
+                        nodes.append({'id': end_nid, 'label': val.end_node.get('name') or end_label, 'type': end_label})
+
+                    edges.append({'from': start_nid, 'to': end_nid, 'type': val.type})
+                    row[key] = f"-[:{val.type}]->"
+                
+                # 3. Это Путь (Path) - ИСПРАВЛЕНИЕ ОШИБКИ JSON
+                elif hasattr(val, 'nodes'):
+                    for node in val.nodes:
+                        nid = node.element_id
+                        if nid not in node_ids:
+                            node_ids.add(nid)
+                            lbls = list(node.labels)
+                            label = lbls[0] if lbls else 'Node'
+                            nodes.append({'id': nid, 'label': node.get('name') or node.get('value') or label, 'type': label})
+                    
+                    for rel in val.relationships:
+                        edges.append({
+                            'from': rel.start_node.element_id,
+                            'to': rel.end_node.element_id,
+                            'type': rel.type
+                        })
+                    row[key] = "Path"
+                
+                # 4. Всё остальное (текст, числа)
+                else:
+                    row[key] = str(val)
+            
+            table_rows.append(row)
+
+        return jsonify({'results': table_rows, 'graph_nodes': nodes, 'graph_edges': edges})
+    except Exception as e:
+        import traceback
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/api/graph', methods=['GET'])
+def api_get_graph():
+    try:
+        cypher = """
+            MATCH (n)
+            OPTIONAL MATCH (n)-[r]->(m)
+            RETURN 
+                elementId(n) AS n_id, labels(n) AS n_labels, n.name AS n_name, n.value AS n_value,
+                elementId(r) AS r_id, type(r) AS r_type,
+                elementId(m) AS m_id, labels(m) AS m_labels, m.name AS m_name, m.value AS m_value
+        """
+        with db.driver.session() as sess:
+            records = list(sess.run(cypher))
+
+        nodes_map, nodes, edges = {}, [], []
+        for rec in records:
+            n_id, m_id = rec.get('n_id'), rec.get('m_id')
+            r_id = rec.get('r_id')
+            
+            if n_id:
+                key = f"{rec['n_labels'][0]}_{n_id}"
+                if key not in nodes_map:
+                    nodes_map[key] = True
+                    nodes.append({'id': key, 'label': rec.get('n_name') or rec.get('n_value'), 'type': rec['n_labels'][0]})
+            if m_id:
+                key = f"{rec['m_labels'][0]}_{m_id}"
+                if key not in nodes_map:
+                    nodes_map[key] = True
+                    nodes.append({'id': key, 'label': rec.get('m_name') or rec.get('m_value'), 'type': rec['m_labels'][0]})
+            if r_id:
+                edges.append({'from': f"{rec['n_labels'][0]}_{n_id}", 'to': f"{rec['m_labels'][0]}_{m_id}", 'type': rec.get('r_type')})
+        
+        return jsonify({'nodes': nodes, 'edges': edges})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':

@@ -54,4 +54,188 @@
         <li><span class="legend-mark ner-date"></span> DATE</li>
     </ul>
 </div>
+<!-- STEP 4: GRAPH EXPLORER - START -->
+<div class="graph-explorer">
+    <h3>🔍 Graph Explorer</h3>
+    
+<!-- Было: RETURN p.name, l.name -->
+<!-- Стало: RETURN p, l (чтобы вернуть объекты узлов для графа) -->
+
+<div class="query-presets">
+    <button type="button" data-cypher="MATCH (p:Person)-[:BORN_IN]->(l:Location) RETURN p, l LIMIT 20">Born in Location</button>
+    <button type="button" data-cypher="MATCH (p1:Person)-[:CHILD_OF]->(p2:Person) RETURN p1, p2 LIMIT 20">Parent-Child</button>
+    <button type="button" data-cypher="MATCH (p:Person)-[:MARRIED_TO]-(spouse:Person) RETURN p, spouse LIMIT 20">Marriages</button>
+    <button type="button" data-cypher="MATCH path = (p:Person)-[*1..2]-(related) RETURN path LIMIT 30">2-hop Connections</button>
+</div>
+
+    <!-- Форма ввода Cypher -->
+    <form class="query-form" id="cypher-form">
+        <textarea name="query" placeholder="Enter Cypher query..." rows="2">MATCH (n) RETURN labels(n) as type, count(*) as count ORDER BY count DESC</textarea>
+        <button type="submit" id="run-query-btn">Run Query</button>
+    </form>
+
+    <!-- Контейнер для графа -->
+    <div id="graph-container"></div>
+
+    <!-- Таблица результатов -->
+    <div id="query-results">
+        <table id="query-results-table">
+            <thead><tr id="results-header"></tr></thead>
+            <tbody id="results-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const form = document.getElementById('cypher-form');
+    const textarea = form.querySelector('textarea');
+    const runBtn = document.getElementById('run-query-btn');
+    const graphContainer = document.getElementById('graph-container');
+    const resultsBody = document.getElementById('results-body');
+    const resultsHeader = document.getElementById('results-header');
+    
+    let network = null;
+
+    // Загрузка графа при старте
+    loadGraph();
+
+    // Пресеты кнопок
+    document.querySelectorAll('.query-presets button').forEach(btn => {
+        btn.addEventListener('click', () => {
+            textarea.value = btn.dataset.cypher;
+            form.dispatchEvent(new Event('submit'));
+        });
+    });
+
+    // Обработка формы
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        runBtn.disabled = true;
+        runBtn.textContent = 'Running...';
+        resultsBody.innerHTML = '<tr><td colspan="3">Processing...</td></tr>';
+        
+        try {
+            const response = await fetch('/api/query', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ query: textarea.value })
+            });
+            const data = await response.json();
+            
+            // Отображаем ошибки, если есть
+            if (data.error) {
+                console.error("Backend Error:", data.error);
+                resultsBody.innerHTML = `<tr><td colspan="3" style="color: #ff6b6b">⚠️ ${data.error}</td></tr>`;
+                // Не рендерим граф при ошибке
+                return;
+            }
+
+            console.log("Data from server:", data); // ДЛЯ ОТЛАДКИ
+            
+            renderTable(data.results);
+            
+            // Если есть узлы, пытаемся нарисовать граф
+            if (data.graph_nodes && data.graph_nodes.length > 0) {
+                renderGraph(data.graph_nodes, data.graph_edges);
+            } else {
+                // Если узлов нет, просто пишем в консоль, НЕ ломаем UI
+                console.log("No graph nodes returned for this query.");
+            }
+        } catch (err) {
+            console.error("Fetch Error:", err);
+            resultsBody.innerHTML = `<tr><td colspan="3" style="color: #ff6b6b">Network Error: ${err.message}</td></tr>`;
+        } finally {
+            runBtn.disabled = false;
+            runBtn.textContent = 'Run Query';
+        }
+    });
+
+    function renderTable(rows) {
+        if (!rows || rows.length === 0) {
+            resultsHeader.innerHTML = '';
+            resultsBody.innerHTML = '<tr><td colspan="3">No results</td></tr>';
+            return;
+        }
+        const columns = Object.keys(rows[0]);
+        resultsHeader.innerHTML = columns.map(c => `<th>${c}</th>`).join('');
+        resultsBody.innerHTML = rows.map(row => 
+            `<tr>${columns.map(c => `<td>${row[c] ?? ''}</td>`).join('')}</tr>`
+        ).join('');
+    }
+
+    function renderGraph(nodes, edges) {
+        if (typeof vis === 'undefined') {
+            console.error("Vis.js library not loaded!");
+            return;
+        }
+
+        // НЕ СТИРАЕМ КОНТЕЙНЕР, даже если данных нет
+        if (!nodes || nodes.length === 0) {
+            console.log("Empty graph data received.");
+            return;
+        }
+
+        const isLight = document.body.classList.contains('light-theme');
+        const colors = {
+            Person: { bg: isLight ? '#6366f1' : '#818cf8', border: '#4338ca' },
+            Location: { bg: isLight ? '#22c55e' : '#4ade80', border: '#16a34a' },
+            Date: { bg: isLight ? '#f59e0b' : '#fbbf24', border: '#d97706' },
+            default: { bg: isLight ? '#64748b' : '#94a3b8', border: '#475569' }
+        };
+
+        const visNodes = nodes.map(n => ({
+            id: n.id, 
+            label: n.label || n.id,
+            color: colors[n.type] || colors.default,
+            shape: 'dot', 
+            font: { color: isLight ? '#fff' : '#1e293b' }
+        }));
+
+        const visEdges = edges.map(e => ({
+            from: e.from, to: e.to, label: e.type,
+            color: { color: isLight ? '#94a3b8' : '#64748b' },
+            arrows: 'to'
+        }));
+
+        const data = { 
+            nodes: new vis.DataSet(visNodes), 
+            edges: new vis.DataSet(visEdges) 
+        };
+        
+        const options = {
+            physics: { stabilization: true },
+            interaction: { hover: true },
+            nodes: { size: 20 }
+        };
+
+        if (network) network.destroy();
+        network = new vis.Network(graphContainer, data, options);
+        console.log("Graph rendered successfully.");
+    }
+
+    async function loadGraph() {
+    console.log("🔄 Loading graph data...");
+    
+    // 1. Пробуем загрузить граф из Neo4j (это работает - вижу в сети 200 OK)
+    try {
+        const res = await fetch('/api/graph'); // Добавил /api/ префикс
+        const data = await res.json();
+        
+        console.log("📊 Graph data from Neo4j:", data);
+        
+        if (!data.error && data.nodes && data.nodes.length > 0) {
+            renderGraph(data.nodes, data.edges);
+            console.log("✅ Graph rendered successfully!");
+        } else {
+            console.log("⚠️ No graph data in Neo4j yet");
+        }
+    } catch (e) {
+        console.error("❌ Failed to load graph from Neo4j:", e);
+    }
+}
+});
+</script>
+
+
 {% endblock %}
