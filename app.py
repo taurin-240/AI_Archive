@@ -8,7 +8,7 @@ from normalizer import normalize_entity
 from ocr import perform_ocr
 from htr import perform_htr
 from ner import perform_ner, translate_text, extract_entities_structured
-from relations import extract_relations
+from hybrid_relations import extract_relations
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)

@@ -4,4 +4,4 @@ static/uploads/*
 .DS_Store
 *.pyc
 __pycache__/
-lvenv/
+lvenv/venv311/ 
